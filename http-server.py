@@ -4,7 +4,8 @@ import socket
 import multiprocessing
 import logging
 import os
-import urllib
+import mimetypes
+from urllib.parse import urlparse
 import argparse
 from time import strftime, gmtime
 
@@ -40,6 +41,17 @@ class FileProducer(object):
         return ""
 
 
+def read_file(path):
+    file = bytes()
+    fp = FileProducer(open(path, 'rb'))
+    while True:
+        cur_chunk = fp.more()
+        if not cur_chunk:
+            break
+        file += cur_chunk
+    return file
+
+
 class AsyncServer(asyncore.dispatcher):
 
     def __init__(self, host="127.0.0.1", port=9000):
@@ -70,7 +82,9 @@ class AsyncHTTPRequestHandler(asynchat.async_chat):
         self.ibuffer = ''
         self.obuffer = b""
         self.reading_headers = True
-        self.header = {}
+        self.headers = {}
+        self.path = ''
+        self.response = ''
 
     def collect_incoming_data(self, data):
         log.debug(f"Incoming data: {data}")
@@ -82,14 +96,13 @@ class AsyncHTTPRequestHandler(asynchat.async_chat):
     def parse_request(self):
         if self.reading_headers:
             self.reading_headers = False
-            method, self.ibuffer = self.ibuffer.split('\r\n', 1)
-            self.header['method'], *_ = method.split(' ')
+            self.method, self.path, self.ibuffer = self.ibuffer.split(' ', 2)
             self.parse_headers()
-            if self.header['method']:
+            if not self.headers['method']:
                 self.send_error(400)
-            if self.header['method'] == "POST":
+            if self.headers['method'] == "POST":
                 try:
-                    content_length = self.header['Content-Length']
+                    content_length = self.headers['Content-Length']
                     if content_length == '0':
                         raise KeyError
                     self.set_terminator(int(content_length))
@@ -102,18 +115,16 @@ class AsyncHTTPRequestHandler(asynchat.async_chat):
             self.ibuffer = ''
             self.handle_request()
 
-
     def parse_headers(self):
-        self.header = {}
+        self.headers = {}
         key_value_strings = self.ibuffer.split('\r\n')
         for key_value in key_value_strings:
             key, value = key_value.split(':', 1)
-            self.header[key] = value
+            self.headers[key] = value
         return self
 
-
     def handle_request(self):
-        method_name = 'do_' + self.header['method']
+        method_name = 'do_' + self.headers['method']
         if not hasattr(self, method_name):
             self.send_error(405)
             self.handle_close()
@@ -121,8 +132,9 @@ class AsyncHTTPRequestHandler(asynchat.async_chat):
         handler = getattr(self, method_name)
         handler()
 
-    def send_header(self, keyword, value):
-        pass
+    def add_header(self, keyword, value):
+        self.response += f"{keyword}: {value}"
+        self.end_headers()
 
     def send_error(self, code, message=None):
         try:
@@ -132,31 +144,70 @@ class AsyncHTTPRequestHandler(asynchat.async_chat):
         if message is None:
             message = short_msg
 
-        self.send_response(code, message)
-        self.send_header("Content-Type", "text/plain")
-        self.send_header("Connection", "close")
+        self.init_response(code, message)
+        self.add_header("Content-Type", "text/plain")
+        self.add_header("Connection", "close")
         self.end_headers()
+        self.send(self.response.encode('utf-8'))
+        self.close()
 
-    def send_response(self, code, message=None):
-        pass
+    def init_response(self, code, message=None):
+        self.response = f"HTTP/1.1 {code} {message}"
 
     def end_headers(self):
-        pass
+        self.response += "\r\n"
 
     def date_time_string(self):
-        pass
+        return strftime("%a, %d %b %Y %H:%M:%S GMT", gmtime())
 
     def send_head(self):
-        pass
-
-    def translate_path(self, path):
-        pass
+        path = url_normalize(os.getcwd() + self.path)
+        if os.path.isdir(path):
+            path = os.path.join(path, "index.html")
+            if not os.path.isfile(path):
+                self.send_error(404)
+                return
+            file_type, _ = mimetypes.guess_type(path)
+            file = read_file(path)
+        elif os.path.isfile(path):
+            file_type, _ = mimetypes.guess_type(path)
+            file = read_file(path)
+        else:
+            self.send_error(404)
+            return
+        return file, file_type
 
     def do_GET(self):
-        pass
+        file, file_type = self.send_head()
+        self.init_response(200, "OK")
+        self.add_header("Content-Type", file_type)
+        self.add_header("Date", self.date_time_string())
+        self.add_header("Content-Length", len(file))
+        self.add_header("Connection", "close")
+        self.end_headers()
+        self.send(bytes(self.response + file))
+        self.close()
 
     def do_HEAD(self):
-        pass
+        file, file_type = self.send_head()
+        self.init_response(200, "OK")
+        self.add_header("Date", self.date_time_string())
+        self.add_header("Content-Type", file_type)
+        self.add_header("Content-Length", len(file))
+        self.add_header("Connection", "close")
+        self.end_headers()
+        self.send(self.response.encode('utf-8'))
+        self.close()
+
+    def do_POST(self):
+        self.init_response(200, "OK")
+        self.add_header("Date", self.date_time_string())
+        self.add_header("Content-Type", self.headers['Content-Type'])
+        self.add_header("Connection", "close")
+        self.add_header("Content-Length", self.headers['Content-Length'])
+        self.end_headers()
+        self.send(self.response.encode('utf-8'))
+        self.close()
 
     responses = {
         200: ('OK', 'Request fulfilled, document follows'),
