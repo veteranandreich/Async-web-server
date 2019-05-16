@@ -22,6 +22,8 @@ def url_normalize(path):
             path = path.replace("/..", "", 1)
     path = path.replace("/./", "/")
     path = unquote(path)
+    if "?" in path:
+        path = path[:path.find('?')]
     return path
 
 
@@ -126,7 +128,6 @@ class AsyncHTTPRequestHandler(asynchat.async_chat):
 
     def handle_request(self):
         method_name = 'do_' + self.headers['method']
-        print(method_name)
         if not hasattr(self, method_name):
             self.send_error(405)
             self.handle_close()
@@ -157,6 +158,7 @@ class AsyncHTTPRequestHandler(asynchat.async_chat):
 
     def init_response(self, code, message=None):
         self.response = f"HTTP/1.1 {code} {message}"
+        self.end_headers()
 
     def end_headers(self):
         self.response += "\r\n"
@@ -165,14 +167,11 @@ class AsyncHTTPRequestHandler(asynchat.async_chat):
         return strftime("%a, %d %b %Y %H:%M:%S GMT", gmtime())
 
     def send_head(self):
-        if '/..' in self.path:
-            self.send_error(404)
-            return None
-        path = url_normalize(os.getcwd() + self.path)
+        path = os.getcwd() + url_normalize(self.path)
         if os.path.isdir(path):
             path = os.path.join(path, "index.html")
             if not os.path.isfile(path):
-                self.send_error(404)
+                self.send_error(403)
                 return None
             file_type, _ = mimetypes.guess_type(path)
             file = read_file(path)
@@ -180,7 +179,7 @@ class AsyncHTTPRequestHandler(asynchat.async_chat):
             file_type, _ = mimetypes.guess_type(path)
             file = read_file(path)
         else:
-            self.send_error(403)
+            self.send_error(404)
             return None
         return file, file_type
 
