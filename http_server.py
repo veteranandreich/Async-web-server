@@ -1,6 +1,5 @@
 import asyncore
 import asynchat
-import socket
 import multiprocessing
 import logging
 import os
@@ -56,16 +55,17 @@ class FileProducer(object):
 
 class AsyncServer(asyncore.dispatcher):
 
-    def __init__(self, host="127.0.0.1", port=9000):
+    def __init__(self, host="127.0.0.1", port=9000, handler_class = None):
         super().__init__()
         self.create_socket()
         self.set_reuse_addr()
         self.bind((host, port))
         self.listen(5)
+        self.handler_class = handler_class
 
     def handle_accepted(self, sock, addr):
         logging.debug(f"Incoming connection from {addr}")
-        AsyncHTTPRequestHandler(sock)
+        self.handler_class(sock)
 
     def serve_forever(self):
         try:
@@ -119,7 +119,7 @@ class AsyncHTTPRequestHandler(asynchat.async_chat):
                     self.reading_headers = True
                 else:
                     self.obuffer = self.ibuffer[
-                                   self.ibuffer.index('\r\n\r\n')+4:self.ibuffer.find('--' + self.limiter + '--')-2]
+                                   self.ibuffer.index('\r\n\r\n') + 4:self.ibuffer.find('--' + self.limiter + '--') - 2]
                     self.handle_request()
             except KeyError or ValueError:
                 self.send_error(400)
@@ -127,7 +127,6 @@ class AsyncHTTPRequestHandler(asynchat.async_chat):
         else:
             self.ibuffer = ''
             self.handle_request()
-
 
     def parse_headers(self):
         key_value_strings = self.ibuffer.split('\r\n')
@@ -207,6 +206,7 @@ class AsyncHTTPRequestHandler(asynchat.async_chat):
             self.add_header("Content-Length", len(file))
             self.add_header("Connection", "close")
             self.end_headers()
+            print(self.response.encode('utf-8') + file)
             self.send(self.response.encode('utf-8') + file)
             self.close()
         except TypeError:
@@ -259,7 +259,7 @@ def parse_args():
 
 
 def run():
-    server = AsyncServer(host=args.host, port=args.port)
+    server = AsyncServer(host=args.host, port=args.port, handler_class=AsyncHTTPRequestHandler)
     server.serve_forever()
 
 
