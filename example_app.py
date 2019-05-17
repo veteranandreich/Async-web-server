@@ -12,7 +12,7 @@ class QuoteResource:
         resp.body = json.dumps(quote)
 
     def on_post(self, req, resp):
-        pass
+        resp.body = 'Something Posted'
 
 
 api = falcon.API()
