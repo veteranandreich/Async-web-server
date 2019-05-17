@@ -82,12 +82,15 @@ class AsyncHTTPRequestHandler(asynchat.async_chat):
         super().__init__(sock)
         self.set_terminator(b"\r\n\r\n")
         self.ibuffer = ''
-        self.obuffer = b""
+        self.obuffer = ''
         self.reading_headers = True
         self.headers = {}
         self.path = ''
         self.response = ''
         self.method = ''
+        self.limiter = ''
+        self.server_name = 'localhost'
+        self.server_port = 9000
 
     def collect_incoming_data(self, data):
         logging.debug(f"Incoming data: {data}")
@@ -97,33 +100,44 @@ class AsyncHTTPRequestHandler(asynchat.async_chat):
         self.parse_request()
 
     def parse_request(self):
-        if self.reading_headers:
-            self.reading_headers = False
+        self.reading_headers = False
+        if 'method' not in self.headers:
             self.method, self.path, self.ibuffer = self.ibuffer.split(' ', 2)
-            self.parse_headers()
-            if not self.headers['method']:
-                self.send_error(400)
-            if self.headers['method'] == "POST":
-                try:
-                    content_length = self.headers['Content-Length']
+        self.parse_headers()
+        if 'method' not in self.headers:
+            self.send_error(400)
+        if self.headers['method'] == "POST":
+            try:
+                if not self.limiter:
+                    self.ibuffer = ''
+                    self.limiter = self.headers['content-type'][
+                                   self.headers['content-type'].index('boundary=') + 9:]
+                    content_length = self.headers['content-length']
                     if int(content_length) == 0:
                         self.send_error(400)
                     self.set_terminator(int(content_length))
-                except KeyError:
-                    self.send_error(400)
-                    return
-            else:
-                self.handle_request()
+                    self.reading_headers = True
+                else:
+                    self.obuffer = self.ibuffer[
+                                   self.ibuffer.index('\r\n\r\n')+4:self.ibuffer.find('--' + self.limiter + '--')-2]
+                    self.handle_request()
+            except KeyError or ValueError:
+                self.send_error(400)
+                return
         else:
             self.ibuffer = ''
             self.handle_request()
 
+
     def parse_headers(self):
-        self.headers = {}
         key_value_strings = self.ibuffer.split('\r\n')
-        for key_value in key_value_strings[1:]:
-            key, value = key_value.split(':', 1)
-            self.headers[key] = value
+        for key_value in key_value_strings:
+            if ':' not in key_value:
+                continue
+            else:
+                key, value = key_value.split(':', 1)
+                value.lstrip()
+                self.headers[key.lower()] = value
         self.headers['method'] = self.method
 
     def handle_request(self):
@@ -213,10 +227,11 @@ class AsyncHTTPRequestHandler(asynchat.async_chat):
     def do_POST(self):
         self.init_response(200, "OK")
         self.add_header("Server", '127.0.0.1')
-        self.add_header("Content-Type", self.headers['Content-Type'])
+        self.add_header("Content-Type", self.headers['content-type'])
         self.add_header("Connection", "close")
-        self.add_header("Content-Length", self.headers['Content-Length'])
+        self.add_header("Content-Length", self.headers['content-length'])
         self.end_headers()
+        self.response += self.obuffer
         self.send(self.response.encode('utf-8'))
         self.close()
 
